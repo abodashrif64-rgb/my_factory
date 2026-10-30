@@ -4,6 +4,14 @@ on:
   push:
     tags: ['v*']
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Release to build and publish'
+        type: choice
+        required: true
+        default: v1.0.0
+        options:
+          - v1.0.0
 
 permissions:
   contents: write
@@ -17,6 +25,8 @@ jobs:
     steps:
       - name: Check out the release source
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ inputs.release_tag || github.ref }}
       - name: Set up Node.js 24
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
@@ -25,7 +35,7 @@ jobs:
       - name: Verify release version
         shell: pwsh
         env:
-          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
         run: |
           $version = (Get-Content package.json | ConvertFrom-Json).version
           if ($env:RELEASE_TAG -ne "v$version") { throw 'Run this workflow on the tag matching package.json.' }
@@ -46,7 +56,7 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
         run: |
           $version = (Get-Content package.json | ConvertFrom-Json).version
           gh release create $env:RELEASE_TAG "release/Mada-Windows-x64-v$version.zip" "release/Mada-Source-v$version.zip" release/SHA256SUMS.txt --repo $env:GITHUB_REPOSITORY --verify-tag --draft --title "مدى $version — إدارة مصنع الورق" --notes-file RELEASE_NOTES.md
