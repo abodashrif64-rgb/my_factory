@@ -50,7 +50,7 @@ export default function Invoices({ data, onUpdate, notify, query, createRequeste
   const totalPaid = data.invoices.reduce((sum, invoice) => sum + invoicePaid(data, invoice.id), 0);
   const patchItem = (index: number, field: keyof InvoiceItem, value: string | number) => setDraft(prev => ({ ...prev, items: prev.items.map((item, i) => i === index ? { ...item, [field]: value } : item) }));
   const subtotal = invoiceSubtotal(draft);
-  const draftTotal = invoiceTotal({ ...draft, id: 'preview', number: 'preview' });
+  const draftTotal = invoiceTotal(draft);
 
   async function save(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); setError('');

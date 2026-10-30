@@ -55,6 +55,7 @@ describe('backup and business validation', () => {
   });
   it('accepts version-one backups made before production modules were added', () => {
     const old = createEmptyData() as unknown as Record<string, unknown>;
+    old.version = 1;
     delete old.machines;
     delete old.productionOrders;
     const restored = validateData(old);
@@ -110,7 +111,7 @@ describe('backup and business validation', () => {
   });
   it('rejects malformed JSON, unsupported versions and invalid actual dates', () => {
     expect(() => parseBackup('{')).toThrow();
-    expect(() => validateData({ ...createDemoData(), version: 2 })).toThrow();
+    expect(() => validateData({ ...createDemoData(), version: 999 })).toThrow();
     const data = withTestInvoice();
     data.invoices[0].date = '2026-02-30';
     expect(() => validateData(data)).toThrow();

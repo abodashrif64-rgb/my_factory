@@ -1,4 +1,4 @@
-import type { AppData, Invoice, InvoiceItem, Settings } from '../types';
+import type { AppData, CustomFieldType, Invoice, InvoiceItem, PurchaseInvoice, Settings } from '../types';
 
 const DB_NAME = 'mada-business-local';
 const DB_STORE = 'workspace';
@@ -28,7 +28,7 @@ export function invoiceSubtotal(invoice: Pick<Invoice, 'items'>): number {
   return invoice.items.reduce((sum, item) => sum + toCents(invoiceLineTotal(item)), 0) / CENTS;
 }
 /** Discount is a fixed amount, applied before tax. Each line rounds to cents. */
-export function invoiceTotal(invoice: Invoice): number {
+export function invoiceTotal(invoice: Pick<Invoice, 'items' | 'taxRate' | 'discount'>): number {
   const taxable = toCents(invoiceSubtotal(invoice)) - toCents(invoice.discount);
   const taxBasisPoints = Math.round(invoice.taxRate * 100);
   return (taxable + Math.round(taxable * taxBasisPoints / 10000)) / CENTS;
@@ -42,6 +42,37 @@ export function invoiceStatus(data: AppData, invoice: Invoice): 'paid' | 'partia
   if (invoice.dueDate < today()) return 'overdue';
   return paid > 0 ? 'partial' : 'pending';
 }
+/** Purchasing uses the same cents-based totals as sales; no second arithmetic path. */
+export function purchaseSubtotal(purchase: Pick<PurchaseInvoice, 'items'>): number {
+  return invoiceSubtotal(purchase);
+}
+export function purchaseTotal(purchase: Pick<PurchaseInvoice, 'items' | 'taxRate' | 'discount'>): number {
+  return invoiceTotal(purchase);
+}
+export function purchasePaid(data: AppData, purchaseId: string): number {
+  return data.supplierPayments.filter(payment => payment.purchaseId === purchaseId).reduce((sum, payment) => sum + toCents(payment.amount), 0) / CENTS;
+}
+export function purchaseStatus(data: AppData, purchase: PurchaseInvoice): 'paid' | 'partial' | 'overdue' | 'pending' {
+  const paid = toCents(purchasePaid(data, purchase.id));
+  if (paid >= toCents(purchaseTotal(purchase))) return 'paid';
+  if (purchase.dueDate < today()) return 'overdue';
+  return paid > 0 ? 'partial' : 'pending';
+}
+export function supplierBalance(data: AppData, supplierId: string): number {
+  return data.purchases.filter(purchase => purchase.supplierId === supplierId).reduce((sum, purchase) => sum + Math.max(0, toCents(purchaseTotal(purchase)) - toCents(purchasePaid(data, purchase.id))), 0) / CENTS;
+}
+/** Cash-flow reports count actual supplier payments, never unpaid purchase invoices. */
+export function cashOutflows(data: AppData): { id: string; title: string; category: string; amount: number; date: string }[] {
+  return [
+    ...data.expenses.map(expense => ({ id: `expense:${expense.id}`, title: expense.title, category: expense.category, amount: expense.amount, date: expense.date })),
+    ...data.supplierPayments.map(payment => {
+      const supplier = data.suppliers.find(supplier => supplier.id === payment.supplierId);
+      const purchase = data.purchases.find(purchase => purchase.id === payment.purchaseId);
+      return { id: `supplier-payment:${payment.id}`, title: `سداد مشتريات ${purchase?.number ?? ''} — ${supplier?.name ?? ''}`, category: 'مشتريات', amount: payment.amount, date: payment.date };
+    }),
+  ];
+}
+
 export function formatMoney(value: number, currency = 'EGP'): string {
   const symbol = currency === 'EGP' ? 'ج.م' : currency === 'SAR' ? 'ر.س' : currency === 'AED' ? 'د.إ' : currency;
   return `${new Intl.NumberFormat('en-US', { maximumFractionDigits: 2, minimumFractionDigits: 0 }).format(value)} ${symbol}`;
@@ -49,9 +80,9 @@ export function formatMoney(value: number, currency = 'EGP'): string {
 
 export function createEmptyData(settings?: Settings): AppData {
   return {
-    version: 1, demo: false,
+    version: 2, demo: false,
     settings: settings ?? { companyName: 'شركتي', companySubtitle: 'إدارة أعمالك بوضوح', phone: '', address: '', email: '', taxNumber: '', currency: 'EGP', defaultTax: 14 },
-    customers: [], employees: [], projects: [], invoices: [], receipts: [], expenses: [], modules: [], machines: [], productionOrders: [],
+    customers: [], employees: [], projects: [], invoices: [], receipts: [], expenses: [], modules: [], machines: [], productionOrders: [], suppliers: [], purchases: [], supplierPayments: [],
   };
 }
 export function createDemoData(): AppData {
@@ -163,7 +194,7 @@ function unique<T extends { id: string }>(rows: T[], label: string): T[] {
 /** Copy an untrusted backup into an explicit schema; never trust its properties. */
 export function validateData(input: unknown): AppData {
   const d = object(input, 'البيانات');
-  if (d.version !== 1 || typeof d.demo !== 'boolean') fail('إصدار النسخة الاحتياطية غير مدعوم.');
+  if ((d.version !== 1 && d.version !== 2) || typeof d.demo !== 'boolean') fail('إصدار النسخة الاحتياطية غير مدعوم.');
   const s = object(d.settings, 'إعدادات الشركة');
   const currency = text(s.currency, 'العملة', true, 3);
   if (!/^[A-Z]{3}$/.test(currency)) fail('رمز العملة غير صحيح.');
@@ -262,21 +293,99 @@ export function validateData(input: unknown): AppData {
   }), 'أوامر الإنتاج');
   const productionNumbers = productionOrders.map(o => o.number.trim().toUpperCase());
   if (new Set(productionNumbers).size !== productionNumbers.length) fail('رقم أمر الإنتاج مكرر.');
+  // Version-one workspaces migrate in memory without changing existing records.
+  // Version two marks the new shape so v1.0 refuses to overwrite newer data.
+  // New snapshots require all purchasing arrays; only old absent fields default.
+  const suppliers = unique(list(d.version === 1 && d.suppliers === undefined ? [] : d.suppliers, 'الموردين').map(v => {
+    const r = object(v, 'المورد');
+    return { id: text(r.id, 'معرّف المورد', true, 200), name: text(r.name, 'اسم المورد', true, 200), phone: text(r.phone, 'هاتف المورد', false, 100), email: text(r.email, 'بريد المورد', false, 320), address: text(r.address, 'عنوان المورد'), taxNumber: text(r.taxNumber, 'الرقم الضريبي للمورد', false, 100) };
+  }), 'الموردين');
+  const supplierIds = new Set(suppliers.map(supplier => supplier.id));
+  const purchaseNumbers = new Set<string>();
+  const supplierInvoiceNumbers = new Map<string, Set<string>>();
+  const purchases = unique(list(d.version === 1 && d.purchases === undefined ? [] : d.purchases, 'المشتريات').map(v => {
+    const r = object(v, 'فاتورة الشراء');
+    const supplierId = text(r.supplierId, 'مورد فاتورة الشراء', true, 200);
+    if (!supplierIds.has(supplierId)) fail('مورد فاتورة الشراء غير موجود.');
+    const number = text(r.number, 'رقم فاتورة الشراء', true, 100);
+    const normalizedNumber = number.trim().toUpperCase();
+    if (purchaseNumbers.has(normalizedNumber)) fail('رقم فاتورة الشراء مكرر.');
+    purchaseNumbers.add(normalizedNumber);
+    const supplierInvoiceNumber = text(r.supplierInvoiceNumber, 'رقم فاتورة المورد', false, 100);
+    const normalizedSupplierNumber = supplierInvoiceNumber.trim().toUpperCase();
+    if (normalizedSupplierNumber) {
+      const seen = supplierInvoiceNumbers.get(supplierId) ?? new Set<string>();
+      if (seen.has(normalizedSupplierNumber)) fail('رقم فاتورة المورد مكرر لنفس المورد.');
+      seen.add(normalizedSupplierNumber);
+      supplierInvoiceNumbers.set(supplierId, seen);
+    }
+    const items = list(r.items, 'بنود فاتورة الشراء', 200).map(v => {
+      const item = object(v, 'بند المشتريات');
+      const itemQuantity = quantity(item.quantity, 'كمية المشتريات', true, 1_000_000);
+      const price = money(item.price, 'سعر شراء الوحدة');
+      if (price * itemQuantity > MAX_MONEY) fail('قيمة بند المشتريات تجاوزت الحد المسموح.');
+      if (!['ورقة', 'رزمة', 'طن', 'كيلوجرام', 'قطعة', 'رول', 'خدمة'].includes(item.unit as string)) fail('وحدة بند المشتريات غير صحيحة.');
+      return { description: text(item.description, 'وصف بند المشتريات', true), quantity: itemQuantity, price, unit: item.unit as PurchaseInvoice['items'][number]['unit'] };
+    });
+    if (!items.length) fail('فاتورة الشراء تحتاج بندًا واحدًا على الأقل.');
+    const purchase: PurchaseInvoice = { id: text(r.id, 'معرّف فاتورة الشراء', true, 200), number, supplierInvoiceNumber, supplierId, date: date(r.date, 'تاريخ فاتورة الشراء'), dueDate: date(r.dueDate, 'استحقاق فاتورة الشراء'), items, taxRate: percentage(r.taxRate, 'ضريبة المشتريات'), discount: money(r.discount, 'خصم المشتريات'), notes: text(r.notes, 'ملاحظات المشتريات', false, 10000) };
+    if (purchase.dueDate < purchase.date) fail('استحقاق فاتورة الشراء يجب ألا يسبق تاريخها.');
+    if (toCents(purchase.discount) > toCents(purchaseSubtotal(purchase))) fail('خصم المشتريات أكبر من قيمة الفاتورة.');
+    const total = purchaseTotal(purchase);
+    if (total < 0.01 || total > MAX_MONEY) fail('إجمالي فاتورة الشراء يجب أن يكون موجبًا وفي الحد المسموح.');
+    return purchase;
+  }), 'المشتريات');
+  const purchaseMap = new Map(purchases.map(purchase => [purchase.id, purchase]));
+  const paymentTotals = new Map<string, number>();
+  const supplierPayments = unique(list(d.version === 1 && d.supplierPayments === undefined ? [] : d.supplierPayments, 'مدفوعات الموردين').map(v => {
+    const r = object(v, 'سداد المورد');
+    const purchaseId = text(r.purchaseId, 'فاتورة الشراء المرتبطة بالسداد', true, 200);
+    const supplierId = text(r.supplierId, 'مورد السداد', true, 200);
+    const purchase = purchaseMap.get(purchaseId);
+    if (!purchase || purchase.supplierId !== supplierId || !supplierIds.has(supplierId)) fail('فاتورة الشراء والمورد في السداد غير متطابقين.');
+    const amount = money(r.amount, 'المبلغ المدفوع للمورد', true);
+    const total = (paymentTotals.get(purchaseId) ?? 0) + toCents(amount);
+    if (total > toCents(purchaseTotal(purchase))) fail('مجموع مدفوعات المورد أكبر من قيمة فاتورة الشراء.');
+    paymentTotals.set(purchaseId, total);
+    if (!['cash', 'bank', 'wallet'].includes(r.method as string)) fail('طريقة سداد المورد غير صحيحة.');
+    return { id: text(r.id, 'معرّف سداد المورد', true, 200), purchaseId, supplierId, amount, date: date(r.date, 'تاريخ سداد المورد'), method: r.method as 'cash' | 'bank' | 'wallet', notes: text(r.notes, 'ملاحظات سداد المورد', false, 10000) };
+  }), 'مدفوعات الموردين');
   const modules = unique(list(d.modules, 'الأقسام', 100).map(v => {
     const r = object(v, 'القسم');
     const fields = list(r.fields, 'حقول القسم', 20).map(v => text(v, 'اسم الحقل', true, 100));
     if (!fields.length || new Set(fields).size !== fields.length || fields.some(f => ['__proto__', 'constructor', 'prototype'].includes(f))) fail('حقول القسم مكررة أو غير صحيحة.');
+    let fieldTypes: Record<string, CustomFieldType> | undefined;
+    if (r.fieldTypes !== undefined) {
+      const requestedTypes = object(r.fieldTypes, 'أنواع حقول القسم');
+      fieldTypes = {};
+      for (const [field, kind] of Object.entries(requestedTypes)) {
+        if (!fields.includes(field) || !['text', 'number', 'money', 'date'].includes(kind as string)) fail('نوع حقل القسم غير صحيح أو مرتبط بحقل غير موجود.');
+        fieldTypes[field] = kind as CustomFieldType;
+      }
+    }
     const records = unique(list(r.records, 'سجلات القسم').map(v => {
       const record = object(v, 'السجل');
       const values = object(record.values, 'قيم السجل');
       if (Object.keys(values).some(k => !fields.includes(k))) fail('السجل يحتوي حقولًا غير معروفة.');
       const cleaned: Record<string, string> = {};
-      for (const field of fields) cleaned[field] = text(values[field], 'قيمة الحقل', false, 5000);
+      for (const field of fields) {
+        const value = text(values[field], 'قيمة الحقل', false, 5000);
+        const kind = fieldTypes?.[field] ?? 'text';
+        if (value.trim()) {
+          if ((kind === 'money' || kind === 'number') && !/^[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?$/i.test(value.trim())) fail(`حقل ${field} يحتاج رقمًا عشريًا صحيحًا.`);
+          if (kind === 'money') money(Number(value), `قيمة حقل ${field}`);
+          else if (kind === 'number') {
+            const numeric = Number(value);
+            if (!Number.isFinite(numeric) || Math.abs(numeric) > MAX_MONEY || Math.abs(numeric * 1000 - Math.round(numeric * 1000)) > 0.0001) fail(`حقل ${field} يحتاج رقمًا صحيحًا حتى ثلاث منازل عشرية.`);
+          } else if (kind === 'date') date(value, `تاريخ حقل ${field}`);
+        }
+        cleaned[field] = value;
+      }
       return { id: text(record.id, 'معرّف السجل', true, 200), values: cleaned };
     }), 'سجلات القسم');
-    return { id: text(r.id, 'معرّف القسم', true, 200), name: text(r.name, 'اسم القسم', true, 100), fields, records };
+    return { id: text(r.id, 'معرّف القسم', true, 200), name: text(r.name, 'اسم القسم', true, 100), fields, ...(fieldTypes === undefined ? {} : { fieldTypes }), records };
   }), 'الأقسام');
-  return { version: 1, demo: d.demo, settings, customers, employees, projects, invoices, receipts, expenses, modules, machines, productionOrders };
+  return { version: 2, demo: d.demo, settings, customers, employees, projects, invoices, receipts, expenses, modules, machines, productionOrders, suppliers, purchases, supplierPayments };
 }
 
 function openDatabase(): Promise<IDBDatabase> {

@@ -36,7 +36,7 @@ test('dashboard renders real data without runtime errors and adapts to mobile', 
   const errors: string[] = [];
   page.on('pageerror', error => errors.push(error.message));
   await page.reload();
-  await expect(page.getByRole('heading', { name: 'المبيعات والمصروفات', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'المبيعات والمدفوعات', exact: true })).toBeVisible();
   await expect(page.locator('.recent-table tbody tr')).toHaveCount(5);
   await expect(page.locator('.recharts-surface').first()).toBeVisible();
   await page.screenshot({ path: 'test-results/dashboard.png', fullPage: true });
