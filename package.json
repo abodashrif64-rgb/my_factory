@@ -1,0 +1,42 @@
+{
+  "name": "mada-business-suite",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview --host 0.0.0.0",
+    "test": "vitest run",
+    "test:e2e": "playwright test",
+    "desktop": "npm run desktop:install && npm run build && electron desktop/main.cjs",
+    "package:windows": "npm run build && node scripts/package-windows.mjs",
+    "test:desktop": "npm run build && node scripts/smoke-desktop.mjs",
+    "desktop:install": "node scripts/install-desktop.mjs"
+  },
+  "dependencies": {
+    "@fontsource/tajawal": "^5.3.0",
+    "lucide-react": "^0.468.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "recharts": "^2.15.0"
+  },
+  "devDependencies": {
+    "@electron/get": "^5.1.0",
+    "@electron/packager": "^20.3.0",
+    "@playwright/test": "^1.64.1",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^4.3.4",
+    "electron": "^45.1.0",
+    "fake-indexeddb": "^6.0.0",
+    "typescript": "~5.7.2",
+    "undici": "^8.12.3",
+    "vite": "^6.0.5",
+    "vitest": "^3.0.0"
+  },
+  "main": "desktop/main.cjs",
+  "engines": {
+    "node": ">=24.0.0"
+  }
+}

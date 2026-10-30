@@ -1,0 +1,55 @@
+name: Build and publish Mada for Windows
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+    steps:
+      - name: Check out the release source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Set up Node.js 24
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '24'
+          cache: npm
+      - name: Verify release version
+        shell: pwsh
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          $version = (Get-Content package.json | ConvertFrom-Json).version
+          if ($env:RELEASE_TAG -ne "v$version") { throw 'Run this workflow on the tag matching package.json.' }
+      - name: Install locked dependencies
+        run: npm ci
+      - name: Verify calculations and data integrity
+        run: npm test
+      - name: Build the offline Windows application
+        run: npm run package:windows
+      - name: Archive source and calculate checksums
+        shell: pwsh
+        run: |
+          $version = (Get-Content package.json | ConvertFrom-Json).version
+          git archive --format=zip --prefix=Mada-Source/ --output="release/Mada-Source-v$version.zip" HEAD
+          $lines = Get-ChildItem release/*.zip | Sort-Object Name | ForEach-Object { "$((Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower())  $($_.Name)" }
+          $lines | Set-Content release/SHA256SUMS.txt -Encoding utf8
+      - name: Publish complete release with download files
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          $version = (Get-Content package.json | ConvertFrom-Json).version
+          gh release create $env:RELEASE_TAG "release/Mada-Windows-x64-v$version.zip" "release/Mada-Source-v$version.zip" release/SHA256SUMS.txt --repo $env:GITHUB_REPOSITORY --verify-tag --draft --title "مدى $version — إدارة مصنع الورق" --notes-file RELEASE_NOTES.md
+          if ($LASTEXITCODE -ne 0) { throw 'Release creation or asset upload failed.' }
+          gh release edit $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY --draft=false
+          if ($LASTEXITCODE -ne 0) { throw 'Publishing the completed release failed.' }
